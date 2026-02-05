@@ -1,4 +1,8 @@
 #include "systemcalls.h"
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <fcntl.h>
 
 /**
  * @param cmd the command to execute with system()
@@ -16,6 +20,10 @@ bool do_system(const char *cmd)
  *   and return a boolean true if the system() call completed with success
  *   or false() if it returned a failure
 */
+    int res = system(cmd);
+    if(res == -1){
+        return false;
+    }
 
     return true;
 }
@@ -58,6 +66,33 @@ bool do_exec(int count, ...)
  *   as second argument to the execv() command.
  *
 */
+    //create child process
+    pid_t pid = fork();
+    //check if fork failed
+    if(pid == -1){
+        return false;
+    }
+    else if(pid == 0){
+        //child process
+        execv(command[0], command);
+        //if execv returns, an error occurred
+        exit(1);
+    }
+    else{
+        //parent process
+        int status;
+        waitpid(pid, &status, 0);
+        //check if child process exited successfully
+        if(WIFEXITED(status)){
+            //check if exit status is 0
+            if(WEXITSTATUS(status) != 0){
+                return false;
+            }
+        }
+        else{
+            return false;
+        }
+    }
 
     va_end(args);
 
@@ -92,6 +127,51 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *   The rest of the behaviour is same as do_exec()
  *
 */
+    //create a file descriptor for outputfile
+    int fd = open(outputfile, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+    if(fd == -1){
+        return false;
+    }
+    //create child process
+    pid_t pid = fork();
+    //check if fork failed
+    if(pid == -1){
+        close(fd);
+        return false;
+    }
+    else if(pid == 0){
+        //child process
+        //redirect standard output to outputfile
+        if(dup2(fd, 1) < 0){
+            close(fd);
+            exit(1);
+        }
+        //close(fd);
+        //execute the command
+        execv(command[0], command);
+        //if execv returns, an error occurred
+        close(fd);
+        exit(1);
+    }
+     else{
+        //parent process
+        int status;
+        waitpid(pid, &status, 0);
+        //check if child process exited successfully
+        if(WIFEXITED(status)){
+            //check if exit status is 0
+            if(WEXITSTATUS(status) != 0){
+                close(fd);
+                return false;
+            }
+        }
+        else{
+            close(fd);
+            return false;
+        }
+    }
+   
+    close(fd);
 
     va_end(args);
 
