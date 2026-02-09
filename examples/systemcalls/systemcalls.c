@@ -43,7 +43,8 @@ bool do_system(const char *cmd)
 */
 
 bool do_exec(int count, ...)
-{
+{   
+    fflush(stdout);
     va_list args;
     va_start(args, count);
     char * command[count+1];
@@ -55,7 +56,7 @@ bool do_exec(int count, ...)
     command[count] = NULL;
     // this line is to avoid a compile warning before your implementation is complete
     // and may be removed
-    command[count] = command[count];
+    //command[count] = command[count];
 
 /*
  * TODO:
