@@ -1,21 +1,20 @@
 #Compiler
-CC := $(CROSS_COMPILE)gcc
+CC = $(CROSS_COMPILE)gcc
 
 #Taret
-TARGET := writer
+TARGET = writer
 
 # Flags
-CFLAGS := -Wall -Werror -g
-LDFLAGS :=
+CFLAGS = -Wall -Werror -g
+LDFLAGS =
 
 #Sources
-SRCS := writer.c
+SRCS = writer.c
 
-#Objects
-OBJS := $(SRCS:.c=.o)
+all: $(TARGET)
 
-$(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) $(OBJS) -o $(TARGET) $(LDFLAGS)
+$(TARGET): $(SRCS)
+	$(CC) $(CFLAGS) -o $(TARGET) $(SRCS)
 
 #Clean
 clean:
