@@ -7,14 +7,32 @@
 #include <string.h>
 #include <signal.h>
 #include <stdbool.h>
-#include <sys/resource.h>
 #include <unistd.h>
 
+#define PORT "9000"
+#define tmp_file "/var/tmp/aesdsocketdata"
+
 static bool keep_running = true;
+static char *buffer;
+static int server_socket;
+
+void cleanup() {
+    //free buffer
+    free(buffer);
+    //remove tmp file
+    if (unlink(tmp_file) != 0) {
+        syslog(LOG_ERR, "Failed to remove file %s", tmp_file);
+    }
+    //close connections and cleanup
+    close(server_socket);
+    closelog();
+}
+
 
 void end_program_singal(int signum) {
     
     syslog(LOG_INFO, "Caught signal, exiting");
+    keep_running = false;
 
     return ;
 }
@@ -40,63 +58,87 @@ int main(int argc, char *argv[]) {
         closelog();
         return -1;
     }
-    
-    //get heap size limit
-    struct rlimit limits;
-    memset(&limits, 0, sizeof(struct rlimit));
 
-    if (getrlimit(RLIMIT_AS, &limits) != 0) {
-        syslog(LOG_ERR, "Failed to get heap size limit.");
+    // Allocate buffer for receiving data
+       size_t buffer_size = (1024); // leave 10MB for the program itself
+
+    //create buffer for messages
+    buffer = malloc(buffer_size);
+    if (buffer == NULL) {
         closelog();
         return -1;
     }
-    rlim_t heap_size = limits.rlim_cur ;// leave some space for the program itself
-    printf("Heap size limit: %lu bytes\n", heap_size);
-    heap_size = (1 * 1024 * 1024); // leave 10MB for the program itself
-
-    //create buffer for messages
-    char *buffer = malloc(heap_size);
-        if (buffer == NULL) {
-            closelog();
-            free(buffer);
-            return -1;
-        }
 
     // Create a socket
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) {
+    server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_socket < 0) {
         syslog(LOG_ERR, "Failed to create socket.");
         closelog();
-        free(buffer);
+        return -1;
+    }
+    // Set socket options to allow reuse of address and port
+    int optval = 1;
+    if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
+        syslog(LOG_ERR, "Failed to set socket options.");
+        cleanup();
         return -1;
     }
 
     // Resolve the server address and port
     struct addrinfo *res;
-    if(getaddrinfo("localhost", "9000", NULL, &res) != 0) {
+    if(getaddrinfo("localhost", PORT, NULL, &res) != 0) {
         syslog(LOG_ERR, "Failed to resolve address.");
-        closelog();
-        free(buffer);
+        cleanup();
         return -1;
     }
    
     // bind the socket to the address and port
-    if(bind(sockfd, res->ai_addr, res->ai_addrlen) < 0) {
+    if(bind(server_socket, res->ai_addr, res->ai_addrlen) < 0) {
         freeaddrinfo(res);
         syslog(LOG_ERR, "Failed to bind socket.");
-        closelog();
-        free(buffer);
+        cleanup();
         return -1;
     }
 
     freeaddrinfo(res);
+
+    if(argc>1 && strcmp(argv[1],"-d") == 0){
+        //enter daemon mode
+        //create child process
+        pid_t pid = fork();
+        //check if fork failed
+        if(pid == -1){
+            syslog(LOG_ERR, "Failed to fork process.");
+            cleanup();
+            return -1;
+        }
+        else if(pid == 0){
+            //child process
+            int setsid_result = setsid();
+            if(setsid_result == -1){
+                syslog(LOG_ERR, "Failed to set session id.");
+                cleanup();
+                return -1;
+            }
+            chdir("/");
+            close(STDIN_FILENO);
+            close(STDOUT_FILENO);
+            close(STDERR_FILENO);
+            
+        }
+        else{
+            //parent process
+            //exit parent process
+            exit(0);
+        }
+    }
     
+
     // Listen for incoming connections
-    int result = listen(sockfd, 1);
+    int result = listen(server_socket, 5);
     if (result < 0) {
         syslog(LOG_ERR, "Failed to listen on socket.");
-        closelog();
-        free(buffer);
+        cleanup();
         return -1;
     }
 
@@ -105,58 +147,51 @@ int main(int argc, char *argv[]) {
         // Accept a connection
         struct sockaddr client_addr;
         socklen_t client_addr_len = sizeof(client_addr);
-        int clientfd = accept(sockfd, &client_addr, &client_addr_len);
-        if (clientfd < 0) {
+        int clientfd = accept(server_socket, &client_addr, &client_addr_len);
+        if(keep_running == false){
+            break;
+        }
+        else if (clientfd < 0) {
             syslog(LOG_ERR, "Failed to accept connection.");
-            closelog();
-            free(buffer);
+            cleanup();
             return -1;
         }
 
         syslog(LOG_INFO,"Accepted connection from %s",client_addr.sa_data);
 
         //open aesdsocketdata file and write to it
-        FILE *transfered_data_file = fopen("/var/tmp/aesdsocketdata", "a");
+        FILE *transfered_data_file = fopen(tmp_file, "a+");
         if (transfered_data_file == NULL) {
-            syslog(LOG_ERR, "Failed to open file /var/tmp/aesdsocketdata");
-            closelog();
-            free(buffer);
+            syslog(LOG_ERR, "Failed to open file %s", tmp_file);
+            cleanup();
             return -1;
         }
-
-        int bytes_received = recv(clientfd, buffer, heap_size, 0);
-        if (bytes_received > 0) {
+        ssize_t bytes_received = 0;
+        while((bytes_received = recv(clientfd, buffer, buffer_size, 0)) > 0) {
             fwrite(buffer, 1, bytes_received, transfered_data_file);
-        }
-        fclose(transfered_data_file);
-        memset(buffer, 0, heap_size);
-
-        transfered_data_file = fopen("/var/tmp/aesdsocketdata", "r");
-        if (transfered_data_file == NULL) {
-            closelog();
-            free(buffer);
-            return -1;
+             // Search for newline in the received chunk
+            if (memchr(buffer, '\n', bytes_received)) {
+                break;
+            }
         }
 
-        while (fgets(buffer, 1024, transfered_data_file) != NULL) {
+        fflush(transfered_data_file);
+        fseek(transfered_data_file, 0, SEEK_SET);
+
+        memset(buffer, 0, buffer_size);
+
+        while (fgets(buffer, buffer_size, transfered_data_file) != NULL) {
             send(clientfd, buffer, strlen(buffer), 0);
         }
         fclose(transfered_data_file);
         
         
-        syslog(LOG_INFO, "Closing connection from %s", client_addr.sa_data);
+        syslog(LOG_ERR, "Closing connection from %s", client_addr.sa_data);
         close(clientfd);
 
     }
 
-    //close connections and cleanup
-    free(buffer);
-    //remove tmp file
-    if (remove("/var/tmp/aesdsocketdata") != 0) {
-        syslog(LOG_ERR, "Failed to remove file /var/tmp/aesdsocketdata");
-    }
-
-    closelog();
+    cleanup();
 
     return 0;
 }
