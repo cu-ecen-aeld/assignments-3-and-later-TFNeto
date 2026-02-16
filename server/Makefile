@@ -5,7 +5,7 @@ CC = $(CROSS_COMPILE)gcc
 TARGET = aesdsocket
 
 # Flags
-CFLAGS = -Wall -g #-Werror
+CFLAGS = -Wall -Werror -g
 LDFLAGS =
 
 #Sources
