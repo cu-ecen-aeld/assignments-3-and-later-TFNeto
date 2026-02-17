@@ -1,5 +1,6 @@
+CROSS_COMPILE ?=
 #Compiler
-CC = $(CROSS_COMPILE)gcc
+CC ?= $(CROSS_COMPILE)gcc
 
 #Taret
 TARGET = aesdsocket
@@ -11,11 +12,13 @@ LDFLAGS =
 #Sources
 SRCS = aesdsocket.c
 
+.PHONY: all
 all: $(TARGET)
 
 $(TARGET): $(SRCS)
 	$(CC) $(CFLAGS) -o $(TARGET) $(SRCS)
 
+.PHONY: clean
 #Clean
 clean:
 	rm -rf *.o $(TARGET)

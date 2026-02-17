@@ -1,5 +1,7 @@
+CROSS_COMPILE ?=
 #Compiler
-CC = $(CROSS_COMPILE)gcc
+CC ?= $(CROSS_COMPILE)gcc
+
 
 #Taret
 TARGET = writer
