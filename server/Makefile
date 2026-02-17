@@ -18,6 +18,9 @@ all: $(TARGET)
 $(TARGET): $(SRCS)
 	$(CC) $(CFLAGS) -o $(TARGET) $(SRCS)
 
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
 .PHONY: clean
 #Clean
 clean:

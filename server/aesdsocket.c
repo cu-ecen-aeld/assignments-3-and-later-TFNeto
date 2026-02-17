@@ -69,8 +69,23 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
+     // Resolve the server address and port
+    struct addrinfo *res;
+    struct addrinfo hints;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+
+    if(getaddrinfo(NULL, PORT, &hints, &res) != 0) {
+        syslog(LOG_ERR, "Failed to resolve address.");
+        cleanup();
+        return -1;
+    }
+
     // Create a socket
-    server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    server_socket = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (server_socket < 0) {
         syslog(LOG_ERR, "Failed to create socket.");
         closelog();
@@ -84,14 +99,6 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    // Resolve the server address and port
-    struct addrinfo *res;
-    if(getaddrinfo("localhost", PORT, NULL, &res) != 0) {
-        syslog(LOG_ERR, "Failed to resolve address.");
-        cleanup();
-        return -1;
-    }
-   
     // bind the socket to the address and port
     if(bind(server_socket, res->ai_addr, res->ai_addrlen) < 0) {
         freeaddrinfo(res);
