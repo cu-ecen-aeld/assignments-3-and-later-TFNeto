@@ -1,6 +1,4 @@
-CROSS_COMPILE ?=
-#Compiler
-CC ?= $(CROSS_COMPILE)gcc
+CC ?= gcc
 
 #Taret
 TARGET = aesdsocket
