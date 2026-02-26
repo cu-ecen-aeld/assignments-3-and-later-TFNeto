@@ -1,11 +1,12 @@
-CC ?= gcc
+CROSS_COMPILE ?= 
+CC ?= $(CROSS_COMPILE)gcc
 
 #Taret
 TARGET = aesdsocket
 
 # Flags
-CFLAGS = -Wall -Werror -g
-LDFLAGS =
+CFLAGS ?= -Wall -Werror -g
+LDFLAGS ?= -lpthread -lrt
 
 #Sources
 SRCS = aesdsocket.c
