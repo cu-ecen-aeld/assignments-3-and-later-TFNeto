@@ -14,7 +14,14 @@
 
 /*Defines*/
 #define PORT "9000"
+
+#define USE_AESD_CHAR_DEVICE 1
+
+#if USE_AESD_CHAR_DEVICE
+#define tmp_file "/dev/aesdchar"
+#else
 #define tmp_file "/var/tmp/aesdsocketdata"
+#endif
 
 
 
@@ -440,12 +447,13 @@ int main(int argc, char *argv[]) {
         }
     }
     
-
+    #if !USE_AESD_CHAR_DEVICE
     int set_time_res = set_timer();
     if (set_time_res != 0) {
         cleanup();
         return -1;
     }
+    #endif
 
     // Initialize the linked list for client threads
     struct client_thread *last = NULL;

@@ -158,7 +158,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     memcpy(driver->current_entry.buffptr + driver->current_entry.size, kbuf, current_cmd_bytes);
     // update current entry size
     driver->current_entry.size += current_cmd_bytes;
-
+    retval = current_cmd_bytes; // return the number of bytes written for the current command
     // if newline was found push command to circular buffer as a new entry
     if(newline_found){
         const char* overwritten_buffptr = aesd_circular_buffer_add_entry(&driver->c_buffer, &driver->current_entry);
@@ -167,7 +167,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
             kfree(overwritten_buffptr); 
         }
         retval = current_cmd_bytes; // return the number of bytes written for the current command
-
+        newline_found = false;
         // reset current entry buffer and size for next command
         driver->current_entry.buffptr = NULL;
         driver->current_entry.size = 0;
