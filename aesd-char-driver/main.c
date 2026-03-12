@@ -152,7 +152,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     if(driver->current_entry.buffptr == NULL) {
         PDEBUG("Failed to allocate memory for current entry");
         retval = -ENOMEM;
-        goto free_kbuf;
+        goto free_mutex;
     }
     // copy current command data to current entry buffer
     memcpy(driver->current_entry.buffptr + driver->current_entry.size, kbuf, current_cmd_bytes);
