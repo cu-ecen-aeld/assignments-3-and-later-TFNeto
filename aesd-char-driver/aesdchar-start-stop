@@ -1,0 +1,41 @@
+#!/bin/sh
+# Script for assignment 8 - > Load and unload aesdchar kernel module
+# Author: Tiago Neto
+
+module=aesdchar
+device=aesdchar
+mode="666"
+
+function unload ()
+{   
+    rmmod -f $module
+    rm -f /dev/${module}
+}
+
+function load()
+{   
+    MODULE_PATH="/lib/modules/$(uname -r)/extra/"
+
+    insmod ${MODULE_PATH}/${module}.ko || exit 1
+
+    major=$(awk "\$2==\"$module\" {print \$1}" /proc/devices)
+    rm -f /dev/${module}
+    mknod /dev/${module} c $major 0
+    chgrp wheel /dev/${module}
+    chmod ${mode} /dev/${module}
+}
+
+if [ "$1" = "start" ]
+then
+    echo "Starting aesdchar"
+    unload
+    load
+        
+elif [ "$1" = "stop" ]
+then
+    echo "Stopping aesdchar"
+    unload
+else
+    echo "Usage: $0 {start|stop}"
+    exit 1
+fi
