@@ -18,6 +18,8 @@
 #include <linux/cdev.h>
 #include <linux/fs.h> // file_operations
 #include "aesdchar.h"
+#include "aesd_ioctl.h"
+
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
@@ -193,12 +195,109 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     
     return retval;
 }
+
+loff_t aesd_llseek(struct file *filp, loff_t off, int whence)
+{
+    struct aesd_dev *driver = filp->private_data;
+    loff_t newpos = 0;
+
+    // try to aquire the mutex lock before accessing the circular buffer
+    if(mutex_lock_interruptible(&driver->buffer_lock)) {
+        return -EINVAL;
+    }
+
+    switch(whence) {
+        case SEEK_SET:
+            newpos = off;
+            break;
+        case SEEK_CUR:
+            newpos = filp->f_pos + off;
+            break;
+        case SEEK_END:
+            // calculate the total size of all entries in the circular buffer
+            size_t total_size = 0;
+            struct aesd_buffer_entry *entry;
+            uint8_t index;
+            AESD_CIRCULAR_BUFFER_FOREACH(entry, &driver->c_buffer, index) {
+                total_size += entry->size;
+            }
+            newpos = total_size + off;
+            break;
+        default:
+            return -EINVAL;
+    }
+    
+    if (newpos < 0) {
+        return -EINVAL;
+    }
+    filp->f_pos = newpos;
+
+    mutex_unlock(&driver->buffer_lock);
+
+    return newpos;
+}
+
+long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+    struct aesd_dev *driver = filp->private_data;
+    long retval = -EINVAL;
+
+    //check if the command is valid
+    if (cmd != AESDCHAR_IOCSEEKTO) {
+        retval = -ENOTTY; // command not supported
+        goto out;
+    }
+
+    //copy the command parameters from user space to kernel space
+    struct aesd_seekto seek_cmd;
+    int ret = copy_from_user(&seek_cmd, (const void __user *)arg, sizeof(seek_cmd));
+    if (ret != 0) {
+        retval = -EFAULT; // failed to copy data from user
+        goto out;
+    }
+    
+    // try to aquire the mutex lock before accessing the circular buffer
+    if(mutex_lock_interruptible(&driver->buffer_lock)) {
+        retval = -EINVAL;
+        goto out;
+    }
+
+    if((driver->c_buffer.full == false && seek_cmd.write_cmd >= driver->c_buffer.in_offs) || 
+        (driver->c_buffer.full == true && seek_cmd.write_cmd >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)) {
+        retval = -EINVAL; // invalid write command index
+        goto free_mutex;
+    }
+
+    // calculate offset for the write cmd
+    for (int i=0;i<seek_cmd.write_cmd;i++) {
+        retval += driver->c_buffer.entry[(driver->c_buffer.out_offs + i) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED].size;
+    }
+
+    //calculate offset within the write cmd
+    if(seek_cmd.write_cmd_offset > driver->c_buffer.entry[(driver->c_buffer.out_offs + seek_cmd.write_cmd) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED].size) {
+        retval = -EINVAL; // invalid write command offset
+        goto free_mutex;
+    }
+
+    //add the write command offset to the total offset
+    retval += seek_cmd.write_cmd_offset;
+    filp->f_pos = retval; // set the file position to the offset of the specified write command
+
+    free_mutex:
+        mutex_unlock(&driver->buffer_lock);
+    out:
+    
+    return retval;
+}
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
     .read =     aesd_read,
     .write =    aesd_write,
     .open =     aesd_open,
     .release =  aesd_release,
+    .llseek =   aesd_llseek,
+    .unlocked_ioctl = aesd_ioctl
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)
