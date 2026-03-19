@@ -11,6 +11,10 @@
 #include <stdbool.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include "../aesd-char-driver/aesd_ioctl.h"
+
 
 /*Defines*/
 #define PORT "9000"
@@ -47,7 +51,6 @@ typedef struct thread_data {
 
 static bool keep_running = true;
 static const size_t buffer_size = 1024; 
-static char *buffer;
 static int server_socket;
 
 static pthread_mutex_t file_mutex;
@@ -63,34 +66,52 @@ void set_thread_complete_success(struct client_thread* node, bool success);
 thread_data_t* create_thread_data(void);
 void clean_threads(void);
 void cleanup(); 
+int handle_ioctl(thread_data_t *data, char* cmd_buffer);
+struct aesd_seekto* get_ioctl_command(char* cmd_buffer);
 
 /*This function handles messages from a client thread*/
 void* message_handler_thread (void* thread_data) {
 
     thread_data_t *data = (thread_data_t*) thread_data;
-
-    int mutex_lock_result = pthread_mutex_lock(&file_mutex);
-    if (mutex_lock_result != 0) {
-        syslog(LOG_ERR, "Failed to lock file mutex: %d", mutex_lock_result);
-        data->thread_complete_success = false;
-        set_thread_complete_success(data->client_thread_node, true);
-        return thread_data;
-    }
-    
-    //open aesdsocketdata file and write to it
-    FILE *transfered_data_file = fopen(tmp_file, "a+");
-    if (transfered_data_file == NULL) {
-        syslog(LOG_ERR, "Failed to open file %s", tmp_file);
-        cleanup();
-        data->thread_complete_success = false;
-        set_thread_complete_success(data->client_thread_node, true);
-        return thread_data;
+    FILE *transfered_data_file =NULL;
+    char *buffer_thread = malloc(buffer_size);
+    if (buffer_thread == NULL) {
+        syslog(LOG_ERR, "Failed to allocate memory for thread buffer");
+        goto failure_without_buffer;
     }
     ssize_t bytes_received = 0;
-    while((bytes_received = recv(data->clientfd, buffer, buffer_size, 0)) > 0) {
-        fwrite(buffer, 1, bytes_received, transfered_data_file);
-            // Search for newline in the received chunk
-        if (memchr(buffer, '\n', bytes_received)) {
+    while((bytes_received = recv(data->clientfd, buffer_thread, buffer_size, 0)) > 0) {        
+        // Search for newline in the received chunk
+        if (memchr(buffer_thread, '\n', bytes_received)) {
+            //check for ioctl command
+            if(strncmp(buffer_thread, "AESDCHAR_IOCSEEKTO", 18) == 0){
+                int ioctl_result = handle_ioctl(data,buffer_thread);
+                if (ioctl_result != 0) {
+                    syslog(LOG_ERR, "Failed to handle ioctl command: %d", ioctl_result);
+                    goto failure;
+                }
+                else {
+                    syslog(LOG_INFO, "Handled ioctl command successfully");
+                    goto success;
+                }
+            }
+            else{
+                
+                int mutex_lock_result = pthread_mutex_lock(&file_mutex);
+                if (mutex_lock_result != 0) {
+                    syslog(LOG_ERR, "Failed to lock file mutex: %d", mutex_lock_result);
+                    goto failure;
+                }
+                
+                //open aesdsocketdata file and write to it
+                transfered_data_file = fopen(tmp_file, "a+");
+                if (transfered_data_file == NULL) {
+                    syslog(LOG_ERR, "Failed to open file %s", tmp_file);
+                    cleanup();
+                    goto failure;
+                }
+                fwrite(buffer_thread, 1, bytes_received, transfered_data_file);
+            }
             break;
         }
     }
@@ -98,24 +119,31 @@ void* message_handler_thread (void* thread_data) {
     fflush(transfered_data_file);
     fseek(transfered_data_file, 0, SEEK_SET);
 
-    memset(buffer, 0, buffer_size);
+    memset(buffer_thread, 0, buffer_size);
 
-    while (fgets(buffer, buffer_size, transfered_data_file) != NULL) {
-        send(data->clientfd, buffer, strlen(buffer), 0);
+    while (fgets(buffer_thread, buffer_size, transfered_data_file) != NULL) {
+        send(data->clientfd, buffer_thread, strlen(buffer_thread), 0);
     }
     fclose(transfered_data_file);
 
     int mutex_unlock_result = pthread_mutex_unlock(&file_mutex);
     if (mutex_unlock_result != 0) {
         syslog(LOG_ERR, "Failed to unlock file mutex: %d", mutex_unlock_result);
-        data->thread_complete_success = false;
-        set_thread_complete_success(data->client_thread_node, true);
-        return thread_data;
+        goto failure;
     }
 
-    data->thread_complete_success = true;
-    set_thread_complete_success(data->client_thread_node, true);
+    success:
+        data->thread_complete_success = true;
+        set_thread_complete_success(data->client_thread_node, true);
+        free(buffer_thread);
 
+    return thread_data;
+
+    failure:
+        free(buffer_thread);
+    failure_without_buffer:
+        data->thread_complete_success = false;
+        set_thread_complete_success(data->client_thread_node, true);
     return thread_data;
 }
 
@@ -126,8 +154,6 @@ void cleanup() {
         check_completed_threads();
     }
     clean_threads();
-    //free buffer
-    free(buffer);
     //remove tmp file
     if (unlink(tmp_file) != 0) {
         syslog(LOG_ERR, "Failed to remove file %s", tmp_file);
@@ -332,6 +358,78 @@ int set_timer(void)
     return 0;
 }
 
+int handle_ioctl(thread_data_t *data, char* cmd_buffer) {
+    int retval = 0;
+
+    //get ioctl cmd and cmd offset
+    struct aesd_seekto* cmd = get_ioctl_command(cmd_buffer);
+    if (cmd == NULL) {
+        syslog(LOG_ERR, "Failed to get ioctl command");
+        return -1;
+    }
+    //get file mutex lock
+    int mutex_lock_result = pthread_mutex_lock(&file_mutex);
+    if (mutex_lock_result != 0) {
+        syslog(LOG_ERR, "Failed to lock file mutex: %d", mutex_lock_result);
+        free(cmd);
+        return -1;
+    }
+    //open file
+    int fd = open(tmp_file, O_RDWR);
+    if (fd < 0) {
+        syslog(LOG_ERR, "Failed to open device file: %d", fd);
+        free(cmd);
+        return -1;
+    }
+    //send cmd
+    retval = ioctl(fd, AESDCHAR_IOCSEEKTO, cmd);
+    if (retval < 0) {
+        syslog(LOG_ERR, "Failed to handle ioctl: %d", retval);
+        syslog(LOG_ERR, "Failed to handle ioctl: cmd %u, cmd_offset %u",cmd->write_cmd, cmd->write_cmd_offset );
+        free(cmd);
+        close(fd);
+        return -retval;
+    }
+
+    //read back from file
+    memset(cmd_buffer, 0, buffer_size);
+    ssize_t bytes_read=0;
+    while ((bytes_read=read(fd,cmd_buffer, buffer_size)) > 0) {
+        send(data->clientfd, cmd_buffer, strlen(cmd_buffer), 0);
+    }
+    
+    close(fd);
+
+    int mutex_unlock_result = pthread_mutex_unlock(&file_mutex);
+    if (mutex_unlock_result != 0) {
+        syslog(LOG_ERR, "Failed to unlock file mutex: %d", mutex_unlock_result);
+        free(cmd);
+        return -1;
+    }
+    free(cmd);
+
+
+    return retval;
+
+}
+
+struct aesd_seekto* get_ioctl_command(char* cmd_buffer) {
+    struct aesd_seekto* cmd = malloc(sizeof(struct aesd_seekto));
+    if (cmd == NULL) {
+        syslog(LOG_ERR, "Failed to allocate memory for ioctl command");
+        return NULL;
+    }
+    //parse buffer for write_cmd and write_cmd_offset
+    int sscanf_result = sscanf(cmd_buffer, "AESDCHAR_IOCSEEKTO:%u,%u", &cmd->write_cmd, &cmd->write_cmd_offset);
+    if (sscanf_result != 2) {
+        syslog(LOG_ERR, "Failed to parse ioctl command from buffer");
+        free(cmd);
+        return NULL;
+    }
+    return cmd;
+    
+}
+
 int main(int argc, char *argv[]) {
 
     // Setup syslog with LOG_USER facility
@@ -369,14 +467,7 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    //create buffer for messages
-    buffer = malloc(buffer_size);
-    if (buffer == NULL) {
-        closelog();
-        return -1;
-    }
-
-     // Resolve the server address and port
+    // Resolve the server address and port
     struct addrinfo *res;
     struct addrinfo hints;
 

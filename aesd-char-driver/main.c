@@ -242,6 +242,7 @@ long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     struct aesd_dev *driver = filp->private_data;
     long retval = -EINVAL;
 
+    PDEBUG("Starting ioctl cmd %u",cmd);
     //check if the command is valid
     if (cmd != AESDCHAR_IOCSEEKTO) {
         retval = -ENOTTY; // command not supported
@@ -255,19 +256,20 @@ long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
         retval = -EFAULT; // failed to copy data from user
         goto out;
     }
+    PDEBUG("ioctl write_cmd: %u, write_cmd_offset: %u", seek_cmd.write_cmd, seek_cmd.write_cmd_offset);
     
     // try to aquire the mutex lock before accessing the circular buffer
     if(mutex_lock_interruptible(&driver->buffer_lock)) {
         retval = -EINVAL;
         goto out;
     }
-
-    if((driver->c_buffer.full == false && seek_cmd.write_cmd >= driver->c_buffer.in_offs) || 
-        (driver->c_buffer.full == true && seek_cmd.write_cmd >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)) {
+    uint8_t num_entries = driver->c_buffer.full ? AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED : (driver->c_buffer.in_offs - driver->c_buffer.out_offs);
+    if(driver->c_buffer.full == false && seek_cmd.write_cmd >= num_entries) {
         retval = -EINVAL; // invalid write command index
+        PDEBUG("Invalid write command index: %u, number of entries: %u", seek_cmd.write_cmd, num_entries);
         goto free_mutex;
     }
-
+    retval = 0;
     // calculate offset for the write cmd
     for (int i=0;i<seek_cmd.write_cmd;i++) {
         retval += driver->c_buffer.entry[(driver->c_buffer.out_offs + i) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED].size;
@@ -276,6 +278,7 @@ long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     //calculate offset within the write cmd
     if(seek_cmd.write_cmd_offset > driver->c_buffer.entry[(driver->c_buffer.out_offs + seek_cmd.write_cmd) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED].size) {
         retval = -EINVAL; // invalid write command offset
+        PDEBUG("Invalid write command offset: %u, entry size: %zu", seek_cmd.write_cmd_offset, driver->c_buffer.entry[(driver->c_buffer.out_offs + seek_cmd.write_cmd) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED].size);
         goto free_mutex;
     }
 
